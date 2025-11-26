@@ -19,11 +19,11 @@ from openai import OpenAI
 # .env などから環境変数を読み込む
 load_dotenv()
 
-api_key = (
-    st.secrets.get("OPENAI_API_KEY")
-    if "OPENAI_API_KEY" in st.secrets
-    else os.getenv("OPENAI_API_KEY")
-)
+api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("OPENAI_API_KEY が設定されていません。StreamlitのSecretsか.envを確認してください。")
+    st.stop()
 
 client = OpenAI(api_key=api_key)
 
@@ -553,11 +553,11 @@ def main():
 
     tab1, tab2, tab3 = st.tabs(["① インプット設定", "② 基準編集", "③ Excel出力"])
 
-    # ---- タブ1：インプット設定（研修名・PDF・採点項目などすべて変数） ----
-    # 採点項目リスト：1行1項目。ここを書き換えるだけで別研修に流用可能
+    # ---- タブ1：インプット設定（研修名・PDF・採点項目などすべて変数）----
     with tab1:
         st.subheader("研修情報・インプット設定")
 
+        # 研修名
         training_name = st.text_input(
             "研修名",
             value="",
@@ -573,9 +573,7 @@ def main():
 
         # session_state に採点項目リストを保持
         if "item_list_text" not in st.session_state:
-            st.session_state["item_list_text"] = (
-                ""
-            )
+            st.session_state["item_list_text"] = ""
 
         # ② URLから自動抽出ボタン
         if st.button("URLから採点項目を自動抽出"):
@@ -601,61 +599,62 @@ def main():
             help="URLから自動抽出した項目をベースに、ここで手動で修正・追記できます。",
         )
 
+        # ④ 研修テキスト PDF
+        uploaded_pdf = st.file_uploader(
+            "研修テキスト PDF をアップロード（どの研修でも可）",
+            type=["pdf"],
+        )
 
-    # 研修テキスト PDF：新人研修以外の PDF に差し替えても同じロジックで動く
-    uploaded_pdf = st.file_uploader(
-        "研修テキスト PDF をアップロード（どの研修でも可）",
-        type=["pdf"],
-    )
+        # ⑤ 任意の講師フィードバック
+        trainer_feedback = st.text_area(
+            "過去の講師フィードバック・評価観点（任意）",
+            height=150,
+            placeholder=(
+                "例：\n"
+                "・この研修では〇〇の行動変容を重視したい\n"
+                "・振り返りでは具体的なエピソードが書けているかを見たい など"
+            ),
+        )
 
-    # 任意の講師フィードバック
-    trainer_feedback = st.text_area(
-        "過去の講師フィードバック・評価観点（任意）",
-        height=150,
-        placeholder=(
-            "例：\n"
-            "・この研修では〇〇の行動変容を重視したい\n"
-            "・振り返りでは具体的なエピソードが書けているかを見たい など"
-        ),
-    )
+        # ⑥ プロンプトテンプレート
+        prompt_template = st.text_area(
+            "基準生成用プロンプトテンプレート",
+            value=DEFAULT_PROMPT_TEMPLATE,
+            height=260,
+        )
 
-    # プロンプトテンプレート：内容はそのまま、ただし研修名やテキストは変数で差し込み
-    prompt_template = st.text_area(
-        "基準生成用プロンプトテンプレート",
-        value=DEFAULT_PROMPT_TEMPLATE,
-        height=260,
-    )
+        # ⑦ モデル名
+        model_name = st.text_input("使用モデル名", value="gpt-4.1")
 
-    model_name = st.text_input("使用モデル名", value="gpt-4.1")
+        # ⑧ 基準案生成ボタン
+        if st.button("基準案を生成", type="primary"):
+            if uploaded_pdf is None:
+                st.error("PDF をアップロードしてください。")
+            elif not training_name.strip():
+                st.error("研修名を入力してください。")
+            else:
+                with st.spinner("PDF を解析して基準案を生成しています..."):
+                    pdf_text = extract_text_from_pdf(uploaded_pdf)
+                    items = [
+                        line.strip()
+                        for line in item_list_text.splitlines()
+                        if line.strip()
+                    ]
 
-    if st.button("基準案を生成", type="primary"):
-        if uploaded_pdf is None:
-            st.error("PDF をアップロードしてください。")
-        elif not training_name.strip():
-            st.error("研修名を入力してください。")
-        else:
-            with st.spinner("PDF を解析して基準案を生成しています..."):
-                pdf_text = extract_text_from_pdf(uploaded_pdf)
-                items = [
-                    line.strip()
-                    for line in item_list_text.splitlines()
-                    if line.strip()
-                ]
-
-                try:
-                    data = call_llm_for_criteria(
-                        training_name=training_name,
-                        items=items,
-                        pdf_text=pdf_text,
-                        trainer_feedback=trainer_feedback,
-                        prompt_template=prompt_template,
-                        model=model_name,
-                    )
-                except Exception as e:
-                    st.error(f"LLM 呼び出しでエラーが発生しました: {e}")
-                else:
-                    st.session_state["criteria_json"] = data
-                    st.success("基準案を生成しました。「② 基準編集」タブで確認できます。")
+                    try:
+                        data = call_llm_for_criteria(
+                            training_name=training_name,
+                            items=items,
+                            pdf_text=pdf_text,
+                            trainer_feedback=trainer_feedback,
+                            prompt_template=prompt_template,
+                            model=model_name,
+                        )
+                    except Exception as e:
+                        st.error(f"LLM 呼び出しでエラーが発生しました: {e}")
+                    else:
+                        st.session_state["criteria_json"] = data
+                        st.success("基準案を生成しました。「② 基準編集」タブで確認できます。")
 
     # ---- タブ2：基準編集 ----
     with tab2:
